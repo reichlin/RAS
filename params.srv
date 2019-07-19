@@ -1,0 +1,65 @@
+
+/robot/motor/left/name: "/left_wheel/left_motor"
+/robot/motor/right/name: "/right_wheel/right_motor"
+/robot/motor/left/alpha: 12
+/robot/motor/right/alpha: 12
+/robot/motor/left/beta: 1.5
+/robot/motor/right/beta: 1.5
+/robot/motor/left/gamma: 30
+/robot/motor/right/gamma: 30
+
+/frequency: 10
+/frequency_mc: 20
+/frequency_motorcontroller: 120.0
+/robot/wheels_radius: 0.049
+/robot/base: 0.18
+/robot/radius: 0.12
+/robot/ticks_per_rev: 897.96
+
+/robot/base_link_x_bias: 0.255
+/robot/base_link_y_bias: 0.2
+/robot/base_link_yaw_bias: 1.57
+
+/robot/lidar_x_bias: 0.0
+/robot/lidar_y_bias: 0.0
+/robot/lidar_yaw_bias: -1.53
+
+/map/cell_size: 0.02
+
+/localization/N_particles: 15
+/localization/T: 15
+/localization/x_error: 0.02
+/localization/theta_error: 0.017453293
+/localization/F_threshold: 5.0
+/localization/T_threshold: 0.017453293
+
+/camera/dmax: 0.62
+/camera/dmin: 0.16
+/camera/alpha: 0.4189
+
+/mapping/N_outliers: 5
+/mapping/d_outliers: 97
+/mapping/lidar_distance: 0.7
+/mapping/lidar_non_consecutive: 3
+/mapping/max_w_velocity: 0.01
+/mapping/outliers_min_cluster: 3
+/mapping/counter_for_new_wall: 10
+/mapping/counter_for_mapping: 10
+
+/battery_mapping/max_w_velocity: 0.12
+
+/exploration/d_p: 0.28
+/exploration/weights: 1000
+/exploration/cluster: 20
+/exploration/wallCost: 150
+/exploration/frontier_threshold: 50
+/exploration/invalidThreshold: 5
+
+/position_error: 0.001
+/position_error_theta: 0.03
+/number_of_consecutive_times: 15
+
+/closest_point_to_object/threshold: 91
+
+
+

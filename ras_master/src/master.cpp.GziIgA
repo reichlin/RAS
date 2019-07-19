@@ -1,0 +1,793 @@
+#include "ros/ros.h"
+#include "geometry_msgs/Twist.h"
+#include "geometry_msgs/Pose2D.h"
+#include "geometry_msgs/PoseArray.h"
+#include "std_msgs/Bool.h"
+#include "std_msgs/Header.h"
+#include "std_msgs/String.h"
+#include "visualization_msgs/MarkerArray.h"
+#include "arduino_servo_control/SetServoAngles.h"
+#include <math.h>
+#include <cmath>
+#include <string>
+#include <vector>
+using namespace std;
+
+float posX = 0.0, posY = 0.0, posTheta = 0.0;
+float startX = 0.0, startY = 0.0;
+float x, y, phi;
+float objectX, objectY;
+int numberOfExploredNodes = 0;
+
+struct Object{
+  string name;
+  double posX, posY;
+  int price;//how many points we get for this object
+};
+
+double constrainAngle(double x){
+  x = fmod(x + M_PI,2*M_PI);
+  if (x < 0)
+    x += 2*M_PI;
+  return x - M_PI;
+}
+
+enum states{IDLE,
+            SEARCH,PLAN_SEARCH_PATH,EXECUTE_SEARCH_PATH,GO_TO_NEXT_SEARCH_NODE,PARK, RECOVERY,
+            RESCUE,PLAN_RESCUE_PATH,EXECUTE_RESCUE_PATH,GO_TO_NEXT_RESCUE_NODE,GO_BACK_TO_START,
+            CATCH_OBJECT,VERIFY_OBJECT_CATCHED,LEAVE_OBJECT,GET_READY_START};
+
+class Master
+{
+public:
+  ros::Publisher pathPublisher;
+  ros::Publisher startPointPublisher;
+  ros::Publisher endPointPublisher;
+  ros::Publisher talkerPublisher;
+  ros::Publisher objectMarkerPublisher;
+  ros::Publisher startCollisionAvoidancePublisher;
+  ros::Subscriber collisionSub;
+  ros::Subscriber position_sub;
+  ros::Subscriber object_position_sub;
+  ros::Subscriber finishedPathSub;
+  ros::Subscriber pathPlanSub;
+  ros::Subscriber readyToGoSub;
+  ros::Subscriber newMapSub;
+  ros::Subscriber nextSearchNodeSub;
+  ros::Subscriber batterySub;
+  ros::ServiceClient gripperService;
+  ros::NodeHandle nh;
+  vector<Object> objects;
+  states state, previousState;
+  bool inminentCollision;
+  bool imminentCollision;
+  bool severeCollision;
+  bool finishedPath;
+  bool readyToGo;
+  bool updatedPosition;
+  bool updatedPathPlan;
+  bool initializedPosition;
+  bool replanNeeded;
+  geometry_msgs::Pose searchNode;
+  geometry_msgs::PoseArray pathPlan;
+  int currentSearchNode;
+  int currentRescueObject;
+  geometry_msgs::PoseArray currentPath;
+  double catchingDistance;
+
+  Master()
+  {
+    nh = ros::NodeHandle("~"); //~ private node Handle
+    state = IDLE;
+    readyToGo = false;
+    //inminentCollision = false;
+    finishedPath = false;
+    updatedPosition = false;
+    initializedPosition = false;
+    replanNeeded = false;
+    catchingDistance = 0.26;
+
+    //subs
+    //collisionSub = nh.subscribe("/inminentColision", 1, &Master::collisionCallback, this);
+    collisionSub = nh.subscribe("/imminentCollision", 1, &Master::collisionCallback, this);
+    position_sub = nh.subscribe("/robot/position", 1, &Master::posCallback, this);
+    object_position_sub = nh.subscribe("/object/position", 1, &Master::objCallback, this);
+    finishedPathSub = nh.subscribe("/robot/finishedPath", 1, &Master::finishedPathCallback, this);
+    readyToGoSub = nh.subscribe("/robot/readyToGo", 1, &Master::readyToGoCallback, this);
+    pathPlanSub = nh.subscribe("/path_plan", 1, &Master::pathPlanCallback, this);
+    newMapSub = nh.subscribe("/map/change", 1, &Master::newMapCallback, this);
+    nextSearchNodeSub = nh.subscribe("/master/next_search_node", 1, &Master::nextSearchNodeCallback, this);
+    batterySub = nh.subscribe("/battery", 1, &Master::batteryCallback,this);
+    //pubs & services
+    endPointPublisher = nh.advertise<geometry_msgs::Pose>("/path_end_point", 1);
+    startPointPublisher = nh.advertise<geometry_msgs::Pose>("/path_start_point", 1);
+    pathPublisher = nh.advertise<geometry_msgs::PoseArray>("/path", 1);
+    talkerPublisher = nh.advertise<std_msgs::String>("/talker", 1);
+    gripperService = nh.serviceClient<arduino_servo_control::SetServoAngles>("/servo_control/set_servo_angles");
+    objectMarkerPublisher = nh.advertise<visualization_msgs::MarkerArray>("/object/markers",10);
+    startCollisionAvoidancePublisher = nh.advertise<std_msgs::Bool>("/start_col_avoidance", 1);
+  }
+
+  void posCallback(const geometry_msgs::Pose2D::ConstPtr& msg)
+  {
+    posX = msg->x;
+    posY = msg->y;
+    posTheta = msg->theta;
+    if(!initializedPosition) //TODO get the starting pos from param server
+    {
+      startX = posX;
+      startY = posY;
+    }
+
+    initializedPosition = true;
+  }
+  
+  /*void collisionCallback(const std_msgs::BoolConstPtr& msg)
+  {
+    inminentCollision = msg->data;
+    if(inminentCollision){//stop
+      currentPath.poses.clear();
+      pathPublisher.publish(currentPath);
+      ROS_INFO("i see an obstacle in front of me");
+    }
+  }*/
+  
+  void collisionCallback(const std_msgs::BoolConstPtr& msg)
+  {
+    imminentCollision = msg->data;
+    if(imminentCollision)
+    {
+      ROS_INFO("Collision! -> I have to reverse");
+
+      if(state != RECOVERY)
+        previousState = state;
+      ROS_INFO("Previous state: %d",previousState);
+      state = RECOVERY;
+      ROS_INFO("RECOVERY");
+    }
+  }
+
+  void newMapCallback(const std_msgs::BoolConstPtr& msg)
+  {
+    if(state ==IDLE ||state ==SEARCH ||state ==PLAN_SEARCH_PATH ||state ==RESCUE ||state ==PLAN_RESCUE_PATH
+       ||state ==CATCH_OBJECT ||state ==LEAVE_OBJECT ||state ==GET_READY_START ||state ==RECOVERY){
+      ROS_INFO("im Remapping because I saw a new wall");//in this case we do nothing, it is safe to continue
+
+    }else if(state == EXECUTE_SEARCH_PATH || state == EXECUTE_RESCUE_PATH || state == VERIFY_OBJECT_CATCHED){
+      ROS_INFO("im Remapping and replanning because I saw a new wall");
+      currentPath.poses.clear();
+      pathPublisher.publish(currentPath);
+      replanNeeded = true;
+
+    }else if(state == PARK || state ==  GO_TO_NEXT_SEARCH_NODE){
+      ROS_INFO("im Remapping and replanning because I saw a new wall");
+      currentPath.poses.clear();
+      pathPublisher.publish(currentPath);
+      replanNeeded = true;
+      state = EXECUTE_SEARCH_PATH;
+
+    }else if(state == GO_TO_NEXT_RESCUE_NODE){
+      ROS_INFO("im Remapping and replanning because I saw a new wall");
+      currentPath.poses.clear();
+      pathPublisher.publish(currentPath);
+      replanNeeded = true;
+      state = EXECUTE_RESCUE_PATH;
+    }else if(state ==GO_BACK_TO_START){
+      //TODO decide what to do here
+
+      //VERIFY_OBJECT_CATCHED
+    }
+
+  }
+
+  void batteryCallback(const geometry_msgs::PoseArrayConstPtr& msg)
+  { ROS_INFO(" Battery Callback Function");
+      if(state ==IDLE ||state ==SEARCH ||state ==PLAN_SEARCH_PATH ||state ==RESCUE ||state ==PLAN_RESCUE_PATH
+         ||state ==CATCH_OBJECT ||state ==LEAVE_OBJECT ||state ==GET_READY_START ||state ==RECOVERY){
+        ROS_INFO("im Remapping because i saw a new battery");//in this case we do nothing, it is safe to continue
+
+      }else if(state == EXECUTE_SEARCH_PATH || state == EXECUTE_RESCUE_PATH || state == VERIFY_OBJECT_CATCHED){
+        ROS_INFO("im Remapping and replanning because I saw a new battery");
+        currentPath.poses.clear();
+        pathPublisher.publish(currentPath);
+        replanNeeded = true;
+
+      }else if(state == PARK || state ==  GO_TO_NEXT_SEARCH_NODE){
+        ROS_INFO("im Remapping and replanning because I saw a new battery");
+        currentPath.poses.clear();
+        pathPublisher.publish(currentPath);
+        replanNeeded = true;
+        state = EXECUTE_SEARCH_PATH;
+
+      }else if(state == GO_TO_NEXT_RESCUE_NODE){
+        ROS_INFO("im Remapping and replanning because I saw a new battery");
+        currentPath.poses.clear();
+        pathPublisher.publish(currentPath);
+        replanNeeded = true;
+        state = EXECUTE_RESCUE_PATH;
+      }else if(state ==GO_BACK_TO_START){
+        //TODO decide what to do here
+
+        //VERIFY_OBJECT_CATCHED
+      }
+  }
+
+  void finishedPathCallback(const std_msgs::BoolConstPtr& msg)
+  {
+    finishedPath = msg->data;
+  }
+
+  void readyToGoCallback(const std_msgs::BoolConstPtr& msg)
+  {
+    readyToGo = msg->data;
+  }
+
+  void pathPlanCallback(const geometry_msgs::PoseArrayConstPtr& msg)
+  {
+    pathPlan.poses = msg->poses;
+    updatedPathPlan = true;
+  }
+
+  void nextSearchNodeCallback(const geometry_msgs::PoseConstPtr& msg)
+  {
+    searchNode.position.x = msg->position.x;
+    searchNode.position.y = msg->position.y;
+    searchNode.position.z = msg->position.z;
+  }
+
+  void objCallback(const geometry_msgs::PoseConstPtr& msg)
+  {
+    std_msgs::String pub_msg;
+    if(!isnan(msg->position.x) && !isnan(msg->position.y)){
+      objectX = msg->position.x;
+      objectY = msg->position.y;
+      updatedPosition = true;
+
+      for(int i=0;i<objects.size();++i)
+      {
+        if(fabs(objects[i].posX-objectX)< 0.1 && fabs(objects[i].posY-objectY)< 0.1)//TODO make this range smaller at some point
+        {
+          
+          if(objects[i].name == "unknown")
+            ;//query the clasificator again
+          //If robot detects an object but does not classify it, it should say:
+          //pub_msg.data =  "I see an object";
+          //espeak_pub.publish(pub_msg);
+          return;//we scape the callback function if the object is already known
+        }
+      }
+      ROS_INFO("New Object!, id: %d",(int)objects.size()+1);
+
+      Object o; o.posX = objectX; o.posY = objectY;
+      o.name = "unknown object";//TODO query the classificator
+      o.price = 1;//TODO add a method to put the correct price here
+      objects.push_back(o);
+      // if the robot classifies the object
+      pub_msg.data = o.name;
+      talkerPublisher.publish(pub_msg);
+      visualization_msgs::Marker objMarker;
+      visualization_msgs::MarkerArray objMarkerArray;
+      objMarkerArray.markers.clear();
+      for(int i=0; i<objects.size(); ++i)
+      {
+        objMarker.pose.position.x = objects[i].posX;
+        objMarker.pose.position.y = objects[i].posY;
+        objMarker.header.frame_id = "/map";
+        objMarker.header.stamp = ros::Time();
+        objMarker.ns = "node";
+        objMarker.type = visualization_msgs::Marker::SPHERE;
+        objMarker.action = visualization_msgs::Marker::MODIFY;
+        objMarker.pose.orientation.x = 0.0;
+        objMarker.pose.orientation.y = 0.0;
+        objMarker.pose.orientation.z = 0.0;
+        objMarker.pose.orientation.w = 1.0;
+        objMarker.scale.x = 0.05;
+        objMarker.scale.y = 0.05;
+        objMarker.scale.z = 0.05;
+        objMarker.color.a = 1.0; // Don't forget to set the alpha!
+        objMarker.color.r = 0.95;
+        objMarker.color.g = 0.95;
+        objMarker.color.b = 0.95;
+        objMarker.id = i ;
+        objMarkerArray.markers.push_back(objMarker);
+      }
+      objectMarkerPublisher.publish(objMarkerArray);
+
+    }
+  }
+
+  void handleObject(int desiredGripperState)
+  {
+    arduino_servo_control::SetServoAngles angles;
+    if(desiredGripperState == 0)//0:Closed 1:Opened
+    {
+      angles.request.angle_servo_0= 60;
+      angles.request.angle_servo_1 = 120;
+    }
+    else if(desiredGripperState == 1)
+    {
+      angles.request.angle_servo_0 = 0;
+      angles.request.angle_servo_1 = 180;
+    }
+    else
+    {
+      angles.request.angle_servo_0 = 50;
+      angles.request.angle_servo_1 = 130;
+    }
+    gripperService.call(angles);
+  }
+
+  void callPathPlanner(double startX, double startY, double endX, double endY)//querys path planner
+  {
+    geometry_msgs::Pose nodeAux;
+    nodeAux.position.x = startX;
+    nodeAux.position.y = startY;
+    startPointPublisher.publish(nodeAux);
+    nodeAux.position.x = endX;
+    nodeAux.position.y = endY;
+    endPointPublisher.publish(nodeAux);
+    updatedPathPlan = false;
+  }
+
+  void waitForPathPlanner(ros::Rate loop_rate)//blocking function that waits for message to arrive
+  {
+    while(!updatedPathPlan && ros::ok() && nh.ok())
+    {
+      ros::spinOnce();
+      loop_rate.sleep();
+    }
+    ROS_INFO("I recived a path plan");
+    currentPath.poses = pathPlan.poses;
+  }
+
+  void callDriver()
+  {
+    pathPublisher.publish(currentPath);//we call driver jut before going to next state
+    finishedPath = false;
+  }
+
+  void stop(ros::Rate loop_rate)
+  {
+    currentPath.poses.clear();
+    pathPublisher.publish(currentPath);
+    readyToGo = false;
+    while(!readyToGo && ros::ok() && nh.ok())//waits for it to stop
+    {
+      ros::spinOnce();
+      loop_rate.sleep();
+    }
+  }
+
+};
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, "master");
+  Master master;
+  ros::Rate loop_rate(10);//TODO look for this in params server
+
+  while (ros::ok() && master.nh.ok())
+  {
+    switch (master.state) {
+    case IDLE:
+    {
+
+      int pressedKey = 0;
+      ROS_INFO(" 1 for search         2 for rescue");
+      while( pressedKey == 0 && ros::ok() && master.nh.ok() )
+      {
+        std::cin >> pressedKey;
+        ros::spinOnce();
+        loop_rate.sleep();
+      }
+      while(!master.initializedPosition  && ros::ok() && master.nh.ok() )//this waits for position to be initialized before doing anything
+      {
+        ros::spinOnce();
+        loop_rate.sleep();
+      }
+
+      if(pressedKey == 2)
+      {
+        master.state = RESCUE;//TODO add keyboard input for this, now defaulting to search
+        ROS_INFO("-------------------RESCUE------------------");
+      }
+      else if(pressedKey == 1)
+      {
+        master.state = SEARCH;//TODO add keyboard input for this, now defaulting to search
+        ROS_INFO("-------------------SEARCH------------------");
+      }
+    }
+      break;
+
+    case SEARCH:
+    {
+      master.state = PLAN_SEARCH_PATH;
+      ROS_INFO("PLAN_SEARCH_PATH");
+    }
+      break;
+
+    case PLAN_SEARCH_PATH://this is not used, now we have a on request explorer node
+    {
+      master.state = EXECUTE_SEARCH_PATH;
+      ROS_INFO("EXECUTE_SEARCH_PATH");
+    }
+      break;
+
+    case EXECUTE_SEARCH_PATH:
+    {
+      master.handleObject(2); //0:closed 1:open
+
+      std_msgs::Bool start;
+      start.data = true;
+      master.startCollisionAvoidancePublisher.publish(start);
+
+      if(fabs(master.searchNode.position.z + 1.0) < 0.001 || numberOfExploredNodes > 40)//this means that the explorer node is finished
+      {
+        master.replanNeeded = false;
+        master.callPathPlanner(posX, posY, startX, startY);
+        master.waitForPathPlanner(loop_rate);
+        if(!master.replanNeeded){
+          master.callDriver();
+          master.state = PARK;
+          ROS_INFO("PARK");
+        }
+      }
+      else
+      {
+        master.replanNeeded = false;
+        master.callPathPlanner(posX, posY, master.searchNode.position.x,  master.searchNode.position.y);
+        master.waitForPathPlanner(loop_rate);
+        /*geometry_msgs::PoseArray samplePath; //hardcoded path
+        geometry_msgs::Pose node;
+        samplePath.poses.clear();
+
+        node.position.x = 2.15;
+        node.position.y = 0.25;
+        samplePath.poses.push_back(node);
+        node.position.x = 0.62;
+        node.position.y = 0.46;
+        samplePath.poses.push_back(node);
+        node.position.x = 0.62;
+        node.position.y = 0.95;
+        samplePath.poses.push_back(node);
+        master.currentPath.poses = samplePath.poses;*/
+        if(!master.replanNeeded)
+        {
+          master.callDriver();
+          master.state = GO_TO_NEXT_SEARCH_NODE;
+          ROS_INFO("GO_TO_NEXT_SEARCH_NODE");
+        }
+        numberOfExploredNodes ++;
+
+      }
+    }
+      break;
+
+    case PARK:
+    {
+      if(master.finishedPath)
+      {
+        master.state = IDLE;
+      }
+      else
+      {
+        master.state = PARK;
+      }
+    }
+      break;
+
+
+    case RECOVERY:
+    {
+
+      master.currentPath.poses.clear();
+      master.pathPublisher.publish(master.currentPath);
+      master.readyToGo = false;
+
+      while(!master.readyToGo && ros::ok() && master.nh.ok())//waits for it to stop
+      {
+        ros::spinOnce();
+        loop_rate.sleep();
+      }
+
+      double back_dist = 0.15;
+      phi = M_PI + posTheta;
+      x = posX + back_dist * cos(phi);
+      y = posY + back_dist * sin(phi);
+
+      geometry_msgs::Pose node;
+      master.currentPath.poses.clear();
+      node.position.x = posX;
+      node.position.y = posY;
+      master.currentPath.poses.push_back(node);
+      node.position.x = x;
+      node.position.y = y;
+      node.orientation.z = 180.0;
+      master.currentPath.poses.push_back(node);
+      master.pathPublisher.publish(master.currentPath);
+      master.callDriver();
+
+      master.replanNeeded = true;
+
+      while(!master.finishedPath)
+      {
+        ros::spinOnce();
+        loop_rate.sleep();
+      }
+
+      master.state = master.previousState;
+
+      if(master.state ==IDLE ||master.state ==SEARCH ||master.state ==PLAN_SEARCH_PATH ||master.state ==RESCUE
+         ||master.state ==PLAN_RESCUE_PATH ||master.state ==LEAVE_OBJECT ||master.state ==GET_READY_START ||master.state ==RECOVERY){
+
+        //ROS_INFO("");//in this case we do nothing, it is safe to continue
+
+      }else if(master.state ==CATCH_OBJECT ){
+        ROS_INFO(" EXECUTE_RESCUE_PATH");
+        master.state = EXECUTE_RESCUE_PATH;
+
+      }else if(master.state == EXECUTE_SEARCH_PATH || master.state == EXECUTE_RESCUE_PATH || master.state == VERIFY_OBJECT_CATCHED){
+        //ROS_INFO("");
+        master.replanNeeded = true;
+
+      }else if(master.state == PARK || master.state ==  GO_TO_NEXT_SEARCH_NODE){
+        //ROS_INFO("");
+        master.replanNeeded = true;
+        ROS_INFO("EXECUTE_SEARCH_PATH");
+        master.state = EXECUTE_SEARCH_PATH;
+
+      }else if(master.state == GO_TO_NEXT_RESCUE_NODE){
+        master.replanNeeded = true;
+        ROS_INFO("EXECUTE_RESCUE_PATH");
+        master.state = EXECUTE_RESCUE_PATH;
+
+      }else if(master.state ==GO_BACK_TO_START){
+
+        master.replanNeeded = false;
+        master.callPathPlanner(posX, posY, startX, startY);
+        master.waitForPathPlanner(loop_rate);
+        if(!master.replanNeeded){
+          master.callDriver();
+          master.state = GO_BACK_TO_START;
+          ROS_INFO("GO_BACK_TO_START");
+        }
+
+      }
+       master.imminentCollision = false;
+
+    }
+      break;
+
+
+
+    case GO_TO_NEXT_SEARCH_NODE:
+    {
+      if(master.finishedPath)
+      {
+        master.state = EXECUTE_SEARCH_PATH;
+        ROS_INFO("EXECUTE_SEARCH_PATH");
+      }
+      else
+      {
+        master.state = GO_TO_NEXT_SEARCH_NODE;
+      }
+
+    }
+      break;
+
+    case RESCUE:
+    {
+      master.state = PLAN_RESCUE_PATH;
+      ROS_INFO("PLAN_RESCUE_PATH");
+    }
+      break;
+
+    case PLAN_RESCUE_PATH:
+    {//here we will decide in what order to attempt the rescue, close and pricey object are more valuable of course
+
+      //hard coded object
+      /*objectX = 1.4;//0.225;
+      objectY = 1.6;//0.6;
+      master.updatedPosition = true;
+      ROS_INFO("New Object!, id: %d",(int)master.objects.size()+1);
+      Object o; o.posX = objectX; o.posY = objectY;
+      o.name = "unknown object"; o.price = 1;
+      master.objects.push_back(o);*/
+
+      master.currentRescueObject = 0;
+      master.state = EXECUTE_RESCUE_PATH;
+      ROS_INFO("EXECUTE_RESCUE_PATH");
+    }
+      break;
+
+    case EXECUTE_RESCUE_PATH:
+    {
+      master.handleObject(2); //0:closed 1:open 2:half open(fodriving safely)
+
+      if(master.currentRescueObject == master.objects.size())
+      {
+        ROS_INFO("no more objects left to catch");
+        master.replanNeeded = false;
+        master.callPathPlanner(posX, posY, startX, startY);
+        master.waitForPathPlanner(loop_rate);
+        if(!master.replanNeeded){
+          master.callDriver();
+          master.state = PARK;
+          ROS_INFO("PARK");
+        }
+      }
+      else
+      {
+        ROS_INFO("Current object id: %d",master.currentRescueObject+1);
+        while(!master.initializedPosition && ros::ok() && master.nh.ok())
+        {
+          ros::spinOnce();
+          loop_rate.sleep();
+        }
+        master.replanNeeded = false;
+        master.callPathPlanner(posX, posY, master.objects[master.currentRescueObject].posX, master.objects[master.currentRescueObject].posY);
+        master.waitForPathPlanner(loop_rate);
+        if(!master.replanNeeded)
+        {
+          master.callDriver();
+          master.state = GO_TO_NEXT_RESCUE_NODE;
+          ROS_INFO("GO_TO_NEXT_RESCUE_NODE");
+        }
+      }
+
+
+    }
+      break;
+
+    case GO_TO_NEXT_RESCUE_NODE:
+    {
+      if(fabs(posX - master.objects[master.currentRescueObject].posX) < master.catchingDistance && fabs(posY - master.objects[master.currentRescueObject].posY) < master.catchingDistance )
+      {
+        master.handleObject(1); //0:closed 1:open
+        master.stop(loop_rate);
+        master.updatedPosition = true;
+        objectX = master.objects[master.currentRescueObject].posX;
+        objectY = master.objects[master.currentRescueObject].posY;
+        master.finishedPath = false;
+
+        master.state = CATCH_OBJECT;
+        ROS_INFO("CATCH_OBJECT");
+      }
+      else
+      {
+        master.state = GO_TO_NEXT_RESCUE_NODE;//TODO delete this from here when idle keyboard input is added
+      }
+    }
+      break;
+
+    case CATCH_OBJECT:
+    {
+      if(master.finishedPath)
+      {
+        master.handleObject(0); //0:closed 1:open
+        master.state = VERIFY_OBJECT_CATCHED;
+        ROS_INFO("VERIFY_OBJECT_CATCHED");
+      }
+      else
+      {
+        if(master.updatedPosition)
+        {
+          geometry_msgs::Pose node;
+          master.currentPath.poses.clear();
+          node.position.x = posX;
+          node.position.y = posY;
+          master.currentPath.poses.push_back(node);
+          node.position.x = objectX;
+          node.position.y = objectY;
+          master.currentPath.poses.push_back(node);
+          master.pathPublisher.publish(master.currentPath);//we update the last call with the new more"precise" data
+          master.updatedPosition = false;
+
+        }
+        else
+        {//wait till driver arrives
+          master.state = CATCH_OBJECT;
+        }
+      }
+      break;
+
+    case VERIFY_OBJECT_CATCHED://todo limit the amount of time this can be runned
+      {
+
+
+
+        double back_dist = 0.15;//go backwards
+        phi =  constrainAngle(M_PI + posTheta);
+        x = posX + back_dist * cos(phi);
+        y = posY + back_dist * sin(phi);
+
+        geometry_msgs::Pose node;
+        master.currentPath.poses.clear();
+        node.position.x = posX;
+        node.position.y = posY;
+        master.currentPath.poses.push_back(node);
+        node.position.x = x;
+        node.position.y = y;
+        node.orientation.z = 180.0;
+        master.currentPath.poses.push_back(node);
+        master.pathPublisher.publish(master.currentPath);
+        master.callDriver();
+
+        if(!master.updatedPosition)// TODO change this to something a little more robust
+        {
+          ROS_INFO("I catched object id: %d", master.currentRescueObject+1);
+          master.replanNeeded = false;
+          master.callPathPlanner(posX, posY, startX, startY);
+          master.waitForPathPlanner(loop_rate);
+          if(!master.replanNeeded){
+            master.callDriver();
+            master.state = GO_BACK_TO_START;
+            ROS_INFO("GO_BACK_TO_START");
+          }
+        }
+        else
+        {
+          master.state = CATCH_OBJECT;
+        }
+      }
+        break;
+
+      case GO_BACK_TO_START:
+      {
+        if(master.finishedPath){
+          master.state = LEAVE_OBJECT ;
+          ROS_INFO("LEAVE_OBJECT");
+        }
+      }
+        break;
+
+      case LEAVE_OBJECT:
+      {
+        master.handleObject(1); //0:closed 1:open
+        // go bakwards
+        geometry_msgs::PoseArray samplePath; //this should go backwards
+        geometry_msgs::Pose node;
+        samplePath.poses.clear();
+        node.position.x = posX;
+        node.position.y = posY;
+        samplePath.poses.push_back(node);
+        node.position.x = master.currentPath.poses[master.currentPath.poses.size()-3].position.x;
+        node.position.y = master.currentPath.poses[master.currentPath.poses.size()-3].position.y;
+        node.orientation.z = 180.0;
+        samplePath.poses.push_back(node);
+        master.currentPath.poses = samplePath.poses;
+        master.callDriver();
+
+        master.state = GET_READY_START;
+        ROS_INFO("GET_READY_START");
+      }
+        break;
+
+      case GET_READY_START:
+      {
+
+        if(master.finishedPath){
+          master.state = EXECUTE_RESCUE_PATH ;
+          ROS_INFO("EXECUTE_RESCUE_PATH");
+          master.currentRescueObject++;
+        }
+        else{
+          master.state =  GET_READY_START ;
+        }
+      }
+        break;
+
+      default:
+      {
+        ROS_INFO("something has gone wrong I am at the default case in the master state machine, going to IDLE");
+        master.state = IDLE;
+        ROS_INFO("IDLE");
+      }
+        break;
+      }
+    }
+    ros::spinOnce();
+    loop_rate.sleep();
+  }
+  return 0;
+}

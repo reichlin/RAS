@@ -1,0 +1,25 @@
+<launch>
+
+    <rosparam command="load" file="/home/ras28/catkin_ws/src/ras_project/params.srv" />
+
+    <include file = "$(find rplidar_ros)/launch/rplidar.launch" />
+
+    <node name="motor_controller" pkg="ras_motor_controller" type="motor_controller" output="screen" />
+
+    <node name="motor" pkg="phidgets" type="motor" ns="/left_wheel" output="screen">
+    	<param name="serial" value="475398"/>
+    	<param name="name" value="left_motor"/>
+    	<param name="invert_motor" value="false"/>
+	<param name="frequency" value="50"/>
+    </node>
+
+    <node name="motor" pkg="phidgets" type="motor" ns="/right_wheel" output="screen">
+    	<param name="serial" value="475517"/>
+    	<param name="name" value="right_motor"/>
+        <param name="invert_motor" value="true"/>
+	<param name="frequency" value="50"/>
+    </node>
+
+
+
+</launch>

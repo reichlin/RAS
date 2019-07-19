@@ -1,0 +1,18 @@
+<launch>
+
+    <rosparam command="load" file="/home/ras28/catkin_ws/src/ras_project/params.srv" />
+
+    <node pkg="ras_maze_map" name="ras_maze_map_node" type="ras_maze_map_node" >
+      <param name="map_file" value="/home/ras28/catkin_ws/src/ras_project/ras_maze/ras_maze_map/maps/lab_maze_2018.txt" />
+    </node>
+
+
+    <node pkg="ras_localization" name="odometry" type="odometry" />
+    
+    <node pkg="ras_localization" name="mapping" type="mapping" output="screen" />
+
+    <node pkg="ras_tf" name="map_to_base_link" type="map_to_base_link" />
+
+    <node pkg="tf" name="base_link_to_lidar" type="static_transform_publisher" args="0 0 0 -1.53 0 0 /base_link /laser 100" />
+
+</launch>

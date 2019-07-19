@@ -1,0 +1,8 @@
+<launch>
+
+
+  <node pkg="ras_msgs" type="extract_image_evidence" name="extract_image_evidence"/>
+  <node pkg="rqt_gui" type="rqt_gui" name="rqt_gui" args="--perspective-file $(find ras_msgs)/config/ras_evidence.perspective"/>
+  
+
+</launch>

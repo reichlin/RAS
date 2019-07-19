@@ -1,0 +1,10 @@
+<launch>
+	<include file = "$(find launch_files)/launch/motor_controller.launch" />
+	<include file = "$(find launch_files)/launch/odom.launch" />
+	<include file = "$(find launch_files)/launch/object_detection.launch" />
+	<include file = "$(find rplidar_ros)/launch/rplidar.launch" />
+
+	<node pkg="ras_driver" name="driver" type="driver" output="screen" />
+	<node pkg="ras_master" name="master" type="master" output="screen" />
+
+</launch>

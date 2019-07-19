@@ -1,0 +1,28 @@
+<launch>
+
+    <rosparam command="load" file="/home/ras28/catkin_ws/src/ras_project/params.srv" />
+
+    <!-- <node pkg="ras_maze_map" name="ras_maze_map_node" type="ras_maze_map_node" >
+      <param name="map_file" value="/home/ras28/catkin_ws/src/ras_project/ras_maze/ras_maze_map/maps/lab_maze_2018.txt" />
+    </node> -->
+
+    <include file = "$(find realsense_camera)/launch/sr300_nodelet_rgbd.launch" />
+
+    <node pkg="ras_detection" name="detect" type="detect" output="screen"/>
+
+    <node pkg="ras_detection" name="place_object" type="place_object" output="screen" />
+
+    <node pkg="ras_detection" name="classifier" type="classify.py" output="screen" />
+    
+    <!-- <node pkg="ras_detection" name="detect_battery" type="detect_battery" output="screen" /> -->
+
+    <!-- <node pkg="ras_tf" name="map_to_base_link" type="map_to_base_link" /> -->
+
+
+    <node pkg="ras_talker" name="talker_node" type="talker_node" output="screen" />
+    
+    <node pkg="ras_espeak" name="espeak_node" type="espeak_node" output="screen" />
+    
+    <node pkg="tf2_ros" name="base_link_to_camera" type="static_transform_publisher" args="0.092 0.0 0.158 -1.570796 0.0 -2.135 base_link camera_link" />
+
+</launch>

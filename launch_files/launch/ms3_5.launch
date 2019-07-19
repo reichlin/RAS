@@ -1,0 +1,25 @@
+<launch>
+
+    <rosparam command="load" file="/home/ras28/catkin_ws/src/ras_project/params.srv" />
+    
+    <include file = "$(find launch_files)/launch/localization.launch" />
+
+    <node name="path_plan" pkg="ras_path_planning" type="path_plan" output="screen" />
+
+    <node name="servo_control" pkg="arduino_servo_control" type="servo_control" />
+
+   <!-- <node name="collision_avoidance" pkg="ras_driver" type="collision_avoidance" /> -->
+
+    <node name="driver" pkg="ras_driver" type="driver" output="screen" />
+
+    <node name="explorer" pkg="ras_explorer" type="explorer" output="screen" />
+    
+    <node name="mismatch" pkg="ras_path_planning" type="mismatch" output="screen" />
+
+    <node name="closest_point_to_object" pkg="ras_path_planning" type="closest_point_to_object" output="screen" />
+
+    <node name="detect_battery" pkg="ras_detection" type="detect_battery" output="screen"  />
+
+    <!-- <node name ="talker_node" pkg="ras_talker" type="talker_node" output="screen" /> -->
+
+</launch>

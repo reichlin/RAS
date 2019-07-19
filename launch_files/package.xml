@@ -1,0 +1,20 @@
+<package>
+  <name>launch_files</name>
+  <version>1.0.0</version>
+  <description>launch files</description>
+  <maintainer email="fevb@kth.se">Francisco Viña</maintainer>
+  <license>BSD</license>
+  <url type="website"></url>
+  <author email="fevb@kth.se">Francisco Viña</author>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>rospy</build_depend>
+  <run_depend>rospy</run_depend>
+  
+  <run_depend>controller</run_depend>
+  <run_depend>ras_motor_control</run_depend>
+  <run_depend>set_values</run_depend>
+  <run_depend>motor</run_depend>
+  
+
+</package>

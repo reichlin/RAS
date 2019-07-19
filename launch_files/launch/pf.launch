@@ -1,0 +1,33 @@
+<launch>
+
+
+    <node pkg="ras_maze_map" name="ras_maze_map_node" type="ras_maze_map_node" >
+        <param name="map_file" value="/home/ras28/catkin_ws/src/ras_project/ras_maze/ras_maze_map/maps/lab_maze_2018.txt" />
+    </node>
+    
+    <node name="motor_controller" pkg="ras_motor_controller" type="motor_controller" output="screen" />
+
+    <node name="motor" pkg="phidgets" type="motor" ns="/left_wheel" output="screen">
+    	<param name="serial" value="475398"/>
+    	<param name="name" value="left_motor"/>
+    	<param name="invert_motor" value="false"/>
+	<param name="frequency" value="50"/>
+    </node>
+
+    <node name="motor" pkg="phidgets" type="motor" ns="/right_wheel" output="screen">
+    	<param name="serial" value="475517"/>
+    	<param name="name" value="right_motor"/>
+        <param name="invert_motor" value="true"/>
+	<param name="frequency" value="50"/>
+    </node>
+
+    <node pkg="ras_localization" name="mapping" type="mapping" output="screen" />
+    
+    <node pkg="ras_localization" name="odometry" type="odometry" output="screen" />
+    
+    
+    <node pkg="ras_tf" name="map_to_base_link" type="map_to_base_link" />
+
+    <node pkg="tf" name="base_link_to_lidar" type="static_transform_publisher" args="0 0 0 -1.53 0 0 /base_link /laser 100" />
+
+</launch>
